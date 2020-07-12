@@ -112,6 +112,6 @@ of Ark, and just knows how to handle json.
 
 The processing in my python code is definitely sensitive 
 to the exact json format (both whitespace and certain 
-json object names), so it'll breek if the format changes.
+json object names), so it'll break if the format changes.
 
 
