@@ -104,8 +104,10 @@ https://github.com/Flachdachs/ArkSavegameToolkit
 
 The python code is entirely from scratch.  It uses naya for streaming
 json processing of the game objects array; that knows nothing
-of Ark, and just knows how to handle json.  The processing definitely 
-is sensitive to the exact json format (both whitespace and certain 
-json object names), so it'll braek if the format changes.
+of Ark, and just knows how to handle json.  
+
+The processing in my python code is definitely sensitive 
+to the exact json format (both whitespace and certain 
+json object names), so it'll breek if the format changes.
 
 
