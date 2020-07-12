@@ -34,6 +34,7 @@ should be fine.
     copy ArkBinaryToJsonConvertor.exe ark
     copy ConvertAndAnalyzeArkSave.py ark
     copy MyMap.ark ark
+    cd ark
 
 
 ## Usage Summary
@@ -91,15 +92,18 @@ over time.  Don't rely on this.
 
 ## Dependencies and Inspiration
 
-The C# format conversion used copy-paste code examples from 
+The C# format conversion exe used copy-paste code examples from 
 http://github.com/cadon/ARKStatsExtractor/blob/dev/ARKBreedingStats/ARKBreedingStats.csproj
 to handle read from binary and write to json (with some adjustments
 to make the code actually handle everything, not just dino stats).
+My source code is at https://github.com/jennybrown8/ArkGameConvertBinaryToJson
+if you wanted to build it yourself.
 
 The C# code uses a library called ARKSaveGameToolkit, to
 do all of the heavy lifting.  The Java version is out of
 date and unlikely to be updated; the C# version is a rewrite
 and seems to be up to date as of July 2020 (it's working great).
+I downloaded their source and built the DLLs for my use from that.
 https://github.com/Flachdachs/ArkSavegameToolkit
 
 The python code is entirely from scratch.  It uses naya for streaming
