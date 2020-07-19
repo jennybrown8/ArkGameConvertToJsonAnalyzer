@@ -11,12 +11,20 @@ inventories = dict()
 itemstacks = dict()
 miscellaneous = dict()
 inventory_to_owner_reverse_lookup = dict()
+tame_dinos = dict()
+dino_status = dict()
 
 def getPropertyValueByName(properties, name):
     for prop in properties:
         if prop['name'] == name:
             return prop['value']
     return ''
+
+def getPropertyValueByNameAndIndex(properties, name, index):
+    for prop in properties:
+        if prop['name'] == name and prop.get('index', '') == index:
+            return prop['value']
+    return 0.0
 
 def isEngram(gameobject):
     if (not gameobject.get('properties', {})):
@@ -36,11 +44,9 @@ def isSpecialInventoryItem(gameobject):
     return False
 
 def identifyType(gameobject):
+
     if ("Tribute" in gameobject['class']):
         return "Obelisk_Related"
-
-    if ("StatusComponent" in gameobject['class']):
-        return "StatusComponent"
 
     if ("InventoryComponent" in gameobject['class']):
         return "Inventory"
@@ -54,14 +60,23 @@ def identifyType(gameobject):
         else:
             return "ItemStack"
 
-    if ("_Character_BP_C" in gameobject['class']):
-        return "CharacterBP"
-
     for prop in gameobject.get('properties', {}):
         if prop['name'] == 'OwnerInventory':
             return "ItemStack"
         if prop['name'] == 'MyInventoryComponent':
             return "InventoryOwner"
+        if prop['name'] == 'TamerString':
+            return "TameDinosaur"
+
+    if gameobject['class'].startswith("DinoCharacterStatusComponent") or \
+       gameobject['class'].startswith("Mega_DinoCharacterStatusComponent"): 
+        return "DinosaurStatus"
+
+    if gameobject['class'].startswith("PlayerCharacterStatusComponent"):
+        return "PlayerStatusComponent"
+
+    if ("_Character_BP_C" in gameobject['class']):
+        return "WildDinosaur"
 
     return "miscellaneous"
 
@@ -93,6 +108,13 @@ def handle_object(gameobject):
 
     if (objtype == "miscellaneous"):
         miscellaneous[gameobject['class']] = miscellaneous.get(gameobject['class'], 0) + 1
+
+    if (objtype == "TameDinosaur"):
+        tame_dinos[gameobject['id']] = gameobject
+
+    if (objtype == "DinosaurStatus"):
+        dino_status[gameobject['id']] = gameobject
+
 
 def simplifyName(text):
     text = text.replace("PrimalInventoryBP_", "").replace("PrimalItemResource_", "").replace("PrimalItemConsumable_", "").replace("PrimalItem_", "").replace("PrimalItem", "")
@@ -138,6 +160,53 @@ def report_inventories(inventory_filename):
                     bisBlueprint = str(getPropertyValueByName(stack['properties'], 'bIsBlueprint'))
                     outfile.write(identifierColumns + "\t" + itemName + "\t" + str(itemQuantity) + "\t" + ("Blueprint" if bisBlueprint else "Item") + "\n")
     return inventory_filename
+
+def report_hungry_tames(hungry_tames_filename):
+    # Status values are an ordered sequence rather than named.
+    # Constants help us stay sane.
+    INDEX_FOOD = 4
+
+    with open(hungry_tames_filename, "w") as outfile:
+        # We're denormalizing here; producing a flat list out of hierarchical objects.
+        header = "Dino\tLevel\tDino Name\tx\ty\tz\tFood Levelups\tFood Current\tFood Total\tTamerString\tPlayerName\tTribeName"
+        outfile.write(header)
+
+        for dino_id in tame_dinos:
+            dino = tame_dinos[dino_id]
+            status = dino_status[getPropertyValueByName(dino['properties'], 'MyCharacterStatusComponent')]
+
+            food_current_value = getPropertyValueByNameAndIndex(status['properties'], "CurrentStatusValues", INDEX_FOOD)
+            if not food_current_value:
+                food_current_value = 0.0
+            food_levelups_wild = getPropertyValueByNameAndIndex(status['properties'], "NumberOfLevelUpPointsApplied", INDEX_FOOD)
+            if not food_levelups_wild:
+                food_levelups_wild = 0.0
+            food_levelups_tame = getPropertyValueByNameAndIndex(status['properties'], "NumberOfLevelUpPointsAppliedTamed", INDEX_FOOD)
+            if not food_levelups_tame:
+                food_levelups_tame = 0.0
+
+            base_character_level = getPropertyValueByName(status['properties'], "BaseCharacterLevel")
+            if not base_character_level:
+                base_character_level = 0.0
+            extra_character_level = getPropertyValueByName(status['properties'], "ExtraCharacterLevel")
+            if not extra_character_level:
+                extra_character_level = 0.0
+
+            row = str(dino['id']) + \
+                "\t" + str(simplifyName(dino['class'])) + \
+                "\t" + str(base_character_level + extra_character_level) + \
+                "\t" + str(getPropertyValueByName(dino['properties'], 'TamedName')) + \
+                "\t" + str(dino['location']['x']) + \
+                "\t" + str(dino['location']['y']) + \
+                "\t" + str(dino['location']['z']) + \
+                "\t" + str(food_levelups_wild + food_levelups_tame) + \
+                "\t" + str(food_current_value) + \
+                "\t" + "totalTBD" + \
+                "\t" + str(getPropertyValueByName(dino['properties'], 'TamerString')) + \
+                "\t" + str(getPropertyValueByName(dino['properties'], 'OwningPlayerName')) + \
+                "\t" + str(getPropertyValueByName(dino['properties'], 'TribeName'))
+            outfile.write(row + "\n")
+
 
 def simplify_json_to_game_objects(json_full_filename, json_objects_filename):
     """
@@ -224,21 +293,27 @@ def main_conversion(ark_binary_filename):
     json_full_filename = ark_binary_filename.replace(".ark", ".json")
     json_objects_filename = ark_binary_filename.replace(".ark", "_game_objects.json")
     inventory_filename = ark_binary_filename.replace(".ark", "_inventory.txt")
+    hungry_tames_filename = ark_binary_filename.replace(".ark", "_hungry_tames.txt")
 
-    iprint("1/4 Converting {} from binary to json; this takes a minute...".format(ark_binary_filename))
-    convert_binary_to_json(ark_binary_filename, json_full_filename)
-    iprint("1/4 Wrote {}\n".format(json_full_filename))
+    iprint("1/5 Converting {} from binary to json; this takes a minute...".format(ark_binary_filename))
+    #convert_binary_to_json(ark_binary_filename, json_full_filename)
+    iprint("1/5 Wrote {}\n".format(json_full_filename))
 
-    iprint("2/4 Simplifying json so we can read the game objects...")
-    simplify_json_to_game_objects(json_full_filename, json_objects_filename)
-    iprint("2/4 Wrote {}\n".format(json_objects_filename))
+    iprint("2/5 Simplifying json so we can read the game objects...")
+    #simplify_json_to_game_objects(json_full_filename, json_objects_filename)
+    iprint("2/5 Wrote {}\n".format(json_objects_filename))
 
-    iprint("3/4 Processing game objects. This takes the longest time; several minutes...")
+    iprint("3/5 Processing game objects. This takes the longest time; several minutes...")
     process_game_objects(json_objects_filename) # purely in-memory
 
-    iprint("4/4 Reporting inventories...")
+    iprint("4/5 Reporting inventories...")
     report_inventories(inventory_filename)
-    iprint("4/4 Wrote {}\n".format(inventory_filename))
+    iprint("4/5 Wrote {}\n".format(inventory_filename))
+
+    iprint("5/5 Reporting hungry tames...")
+    report_hungry_tames(hungry_tames_filename)
+    iprint("5/5 Wrote {}\n".format(hungry_tames_filename))
+
 
     #print("Unhandled types:")  # These have been verified as non-inventory as of July 2020.
     #pprint(miscellaneous)
