@@ -26,7 +26,7 @@ as the python script.
 To use the python script, you need to install its dependencies.
 For now, it only has one external dependency: naya.  You can
 get this with "pip install naya", although if you want to
-use conda and virtualenv first to isolate your install, that 
+use conda or virtualenv first to isolate your install, that 
 should be fine.
 
     pip install naya
