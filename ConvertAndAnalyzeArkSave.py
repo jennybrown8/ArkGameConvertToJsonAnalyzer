@@ -3,7 +3,9 @@ import naya
 import sys
 import re
 import os
+import time
 from pprint import pprint
+
 
 # Global variables hold the sorted game objects ahead of reporting.
 owners = dict()
@@ -166,6 +168,10 @@ def report_hungry_tames(hungry_tames_filename):
     # Constants help us stay sane.
     INDEX_FOOD = 4
 
+    # Order from 0: Health, Stamina, Torpidity, Oxygen, Food, Water, 
+    # Temperature, Weight, MeleeDamageMultiplier, SpeedMultiplier, 
+    # TemperatureFortitude, CraftingSpeedMultiplier
+
     with open(hungry_tames_filename, "w") as outfile:
         # We're denormalizing here; producing a flat list out of hierarchical objects.
         header = "Dino\tLevel\tDino Name\tx\ty\tz\tFood Levelups\tFood Current\tFood Total\tTamerString\tPlayerName\tTribeName"
@@ -290,17 +296,19 @@ def main_conversion(ark_binary_filename):
     json into in-memory sets, and report on the inventories.
     Output goes to similarly named files.
     """
+    start_time_seconds = round(time.time())
+
     json_full_filename = ark_binary_filename.replace(".ark", ".json")
     json_objects_filename = ark_binary_filename.replace(".ark", "_game_objects.json")
     inventory_filename = ark_binary_filename.replace(".ark", "_inventory.txt")
     hungry_tames_filename = ark_binary_filename.replace(".ark", "_hungry_tames.txt")
 
     iprint("1/5 Converting {} from binary to json; this takes a minute...".format(ark_binary_filename))
-    #convert_binary_to_json(ark_binary_filename, json_full_filename)
+    convert_binary_to_json(ark_binary_filename, json_full_filename)
     iprint("1/5 Wrote {}\n".format(json_full_filename))
 
     iprint("2/5 Simplifying json so we can read the game objects...")
-    #simplify_json_to_game_objects(json_full_filename, json_objects_filename)
+    simplify_json_to_game_objects(json_full_filename, json_objects_filename)
     iprint("2/5 Wrote {}\n".format(json_objects_filename))
 
     iprint("3/5 Processing game objects. This takes the longest time; several minutes...")
@@ -314,11 +322,13 @@ def main_conversion(ark_binary_filename):
     report_hungry_tames(hungry_tames_filename)
     iprint("5/5 Wrote {}\n".format(hungry_tames_filename))
 
+    end_time_seconds = round(time.time())
 
     #print("Unhandled types:")  # These have been verified as non-inventory as of July 2020.
     #pprint(miscellaneous)
 
-    iprint("Complete.")
+    minutes = (end_time_seconds - start_time_seconds)/60.0
+    iprint("Completed in " + str(minutes) + " minutes.")
 
 
 def main(argv):
