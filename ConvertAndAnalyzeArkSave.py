@@ -4,6 +4,7 @@ import sys
 import re
 import os
 import time
+import json
 from pprint import pprint
 
 
@@ -15,6 +16,28 @@ miscellaneous = dict()
 inventory_to_owner_reverse_lookup = dict()
 tame_dinos = dict()
 dino_status = dict()
+
+# Status values are an ordered sequence rather than named.
+# Constants help us stay sane.
+INDEX_FOOD = 4
+PRIMALEARTH = "/Game/PrimalEarth/Dinos/"
+
+# Order from zero: 0 Health, 1 Stamina, 2 Torpidity, 3 Oxygen, 4 Food, 5 Water, 
+# 6 Temperature, 7 Weight, 8 MeleeDamageMultiplier, 9 SpeedMultiplier, 
+# 10 TemperatureFortitude, 11 CraftingSpeedMultiplier
+
+not_really_dinos = [
+  "Raft_BP_C",
+  "MotorRaft_BP_C",
+  "Barge_BP_C",
+  "CPCanoeBoat_eco_C",
+  "IRaft_BP_C",
+  "GalleonRaft_BP_C",
+  "CogRaft_BP_C",
+  "TekHoverSkiff_Character_BP_C",
+  "BP_HoverSkiff_C"
+]
+
 
 def getPropertyValueByName(properties, name):
     for prop in properties:
@@ -163,22 +186,142 @@ def report_inventories(inventory_filename):
                     outfile.write(identifierColumns + "\t" + itemName + "\t" + str(itemQuantity) + "\t" + ("Blueprint" if bisBlueprint else "Item") + "\n")
     return inventory_filename
 
-def report_hungry_tames(hungry_tames_filename):
-    # Status values are an ordered sequence rather than named.
-    # Constants help us stay sane.
-    INDEX_FOOD = 4
+def load_values_json():
+    print("Loading values.json into memory")
 
-    # Order from 0: Health, Stamina, Torpidity, Oxygen, Food, Water, 
-    # Temperature, Weight, MeleeDamageMultiplier, SpeedMultiplier, 
-    # TemperatureFortitude, CraftingSpeedMultiplier
+    with open('values.json') as f:
+        valuesdata = json.load(f)
+
+    values_by_bp = dict()
+    for species in valuesdata['species']:
+        if PRIMALEARTH in species['blueprintPath']:
+            shortname = species['blueprintPath'].split(".")[1]
+            values_by_bp[shortname + "_C"] = species
+
+    return values_by_bp
+
+
+
+def calculate_food_total(dino, valuesjson_entry, base_character_level, extra_character_level, food_levelups_wild, food_levelups_tame):
+    """
+    Calculation formula for this is based on the excellent notes on Ark's wiki:
+    https://ark.gamepedia.com/Creature_Stats_Calculation
+
+    Reference data comes from the ArkSmartBreeding values.json - the file format
+    is documented here: 
+    https://github.com/cadon/ARKStatsExtractor/wiki/Mod-Values
+    Under the fullStatsRaw, the order in a row is "Base (B), wildLevel (Iw), tamedLevel (Id), 
+    tamingAdd (Ta), tamingAffinity (Tm?)"
+    and the order of the rows should match the normal stat order for the 12 stats.
+    """
+    if not valuesjson_entry:
+        print("Error! No json entry matched for dino of class " + dino['class'] + " -- check name matching logic.")
+        return 0
+
+    statusComponentId =  getPropertyValueByName(dino['properties'], 'MyCharacterStatusComponent')
+    if not statusComponentId:
+        print("Error! Couldn't find status component. Coding bug?")
+        return 0
+
+    statusComponent = dino_status[statusComponentId]
+
+
+    # Calculation Example
+    # In-game food total for tamed but not imprinted pteranodon: 4958.3
+    # 29 wild level-ups in food
+    # pteranodon is level 202
+    # 
+    # I think the character blueprints we're seeking are /Game/PrimalEarth/Dinos/ in values.json but not certain.
+    # 
+    # B - base value - from values.json
+    # Lw - levels wild (input parameter above)
+    # Ld - levels domestic (input parameter above)
+    # Iw - increase wild: per-level wild increase as percent of B - from values.json (often looks like a lowercase l)
+    # Id - increase domestic: per-level domestic increase as percent of B - from values.json (often looks like a lowercase l)
+    # Ta - taming additive bonus - from values.json
+    # Tm - taming multiplicative bonus - from values.json
+    # TE - taming effectiveness (when tamed) - must be from dino stats in save file
+    # IB - imprinting bonus (when bred) - must be from dino stats in save file
+    # TBHM - tamed base health multiplier (lowers only the health stat just after taming for certain species, from values.json)
+    # IwM - increase per wild level modifier (1.0 for official servers)
+    # TmM - multiplicative taming-bonus modifier PerLevelStatsMultiplier_DinoTamed_Affinity
+    # IdM - increase per domestic level modifier PerLevelStatsMultiplier_DinoTamed
+    # TaM - additive taming-bonus modifier PerLevelStatsMultiplier_DinoTamed_Add
+    # IBM - Baby imprinting stats scale multiplier (global variable usually 1)
+    #
+    # Formula
+
+    # V = (B * ( 1 + Lw * Iw * IwM) + Ta * TaM) * (1 + TE * Tm * TmM) * (1 + Ld * Id * IdM)
+    #          (           a      )  (   b    )   (          c      )   (          d      )
+    # e = ((B * a) + b) 
+    # V = e * c * d
+
+
+    foodStatValues = valuesjson_entry['fullStatsRaw'][INDEX_FOOD]
+    B = foodStatValues[0]
+    Lw = food_levelups_wild
+    Ld = food_levelups_tame
+    Iw = foodStatValues[1]
+    Id = foodStatValues[2]
+    Ta = foodStatValues[3]
+    Tm = foodStatValues[4]
+    TIE = getPropertyValueByName(statusComponent['properties'], 'TamedIneffectivenessModifier') 
+    if not TIE:
+        TIE = 0.0
+    TE = 1 / (1 + TIE)
+
+    IB = getPropertyValueByName(statusComponent['properties'], 'DinoImprintingQuality') 
+    if not IB:
+        IB = 0.0
+
+    TBHM = valuesjson_entry['TamedBaseHealthMultiplier'] # we actually don't care.
+    IwM = 1.0 ## Server config
+
+### DEBUG ###
+    name = getPropertyValueByName(dino['properties'], 'TamedName')
+    print("{} - B {}  Lw {}  Ld {}  Iw {}  Id {}  Ta {}  Tm {}  TE {}  IB {}".format(name, B, Lw, Ld, Iw, Id, Ta, Tm, TE, IB))
+### DEBUG ###
+
+    TmM = 1.0 # PerLevelStatsMultiplier_DinoTamed_Affinity from Game.ini
+    IdM = 1.0 # PerLevelStatsMultiplier_DinoTamed from Game.ini
+    TaM = 1.0 # PerLevelStatsMultiplier_DinoTamed_Add from Game.ini
+    IBM = 1.0 ## Server config
+
+    return calculate_stat_value(Lw=Lw, Iw=Iw, IwM=IwM, IB=IB, Ta=Ta, TaM=TaM, TE=TE, Tm=Tm, TmM=TmM, Ld=Ld, Id=Id, IdM=IdM, B=B, IBM=IBM, TBHM=1.0)
+
+
+# V = (B × ( 1 + Lw × Iw × IwM) × TBHM × (1 + IB × 0.2 × IBM) + Ta × TaM) × (1 + TE × Tm × TmM) × (1 + Ld × Id × IdM)
+#          (       a          )          (       b          )               (         c       )   (         d       )
+#                                        
+#      (B * a * TBHM * b + (Ta * TaM)) * c * d
+def calculate_stat_value(*, Lw, Iw, IwM, IB, Ta, TaM, TE, Tm, TmM, Ld, Id, IdM, B, IBM, TBHM):
+    a = (1.0 + (Lw * Iw * IwM))
+    b = (1.0 + (IB * 0.2 * IBM))
+    c = (1.0 + (TE * Tm * TmM))
+    d = (1.0 + (Ld * Id * IdM))
+    V = ((B * a * TBHM * b) + (Ta * TaM)) * c * d
+    return V
+
+
+def report_hungry_tames(hungry_tames_filename):
+    values_by_bp = load_values_json()
 
     with open(hungry_tames_filename, "w") as outfile:
         # We're denormalizing here; producing a flat list out of hierarchical objects.
-        header = "Dino\tLevel\tDino Name\tx\ty\tz\tFood Levelups\tFood Current\tFood Total\tTamerString\tPlayerName\tTribeName"
+        header = "ID\tDino\tLevel\tDino Name\tx\ty\tz\tFood Levelups Wild\tFood Levelups Tame\tFood Current\tFood Total\tFoodPercent\tTamerString\tPlayerName\tTribeName\n"
         outfile.write(header)
 
         for dino_id in tame_dinos:
             dino = tame_dinos[dino_id]
+            if dino['class'] in not_really_dinos:
+                continue  # skip rafts and stuff
+            isInCryopod = False
+            for name in dino['names']:
+                if "PrimalItem_WeaponEmptyCryopod" in name:
+                    isInCryopod = True
+            if isInCryopod:
+                continue # skip cryopods
+
             status = dino_status[getPropertyValueByName(dino['properties'], 'MyCharacterStatusComponent')]
 
             food_current_value = getPropertyValueByNameAndIndex(status['properties'], "CurrentStatusValues", INDEX_FOOD)
@@ -198,6 +341,14 @@ def report_hungry_tames(hungry_tames_filename):
             if not extra_character_level:
                 extra_character_level = 0.0
 
+            food_total = calculate_food_total(dino, values_by_bp.get(dino['class'], None), base_character_level, extra_character_level, food_levelups_wild, food_levelups_tame)
+            if (food_total < 1):
+                food_percent = 0
+                print("Warning - could not calculate food total for class {}".format(dino['class']))
+            else:
+                food_percent = food_current_value / food_total
+
+
             row = str(dino['id']) + \
                 "\t" + str(simplifyName(dino['class'])) + \
                 "\t" + str(base_character_level + extra_character_level) + \
@@ -205,13 +356,16 @@ def report_hungry_tames(hungry_tames_filename):
                 "\t" + str(dino['location']['x']) + \
                 "\t" + str(dino['location']['y']) + \
                 "\t" + str(dino['location']['z']) + \
-                "\t" + str(food_levelups_wild + food_levelups_tame) + \
+                "\t" + str(food_levelups_wild) + \
+                "\t" + str(food_levelups_tame) + \
                 "\t" + str(food_current_value) + \
-                "\t" + "totalTBD" + \
+                "\t" + str(food_total) + \
+                "\t" + str(food_percent) + \
                 "\t" + str(getPropertyValueByName(dino['properties'], 'TamerString')) + \
                 "\t" + str(getPropertyValueByName(dino['properties'], 'OwningPlayerName')) + \
                 "\t" + str(getPropertyValueByName(dino['properties'], 'TribeName'))
-            outfile.write(row + "\n")
+            if (food_percent < 0.50):
+                outfile.write(row + "\n")
 
 
 def simplify_json_to_game_objects(json_full_filename, json_objects_filename):
@@ -304,18 +458,18 @@ def main_conversion(ark_binary_filename):
     hungry_tames_filename = ark_binary_filename.replace(".ark", "_hungry_tames.txt")
 
     iprint("1/5 Converting {} from binary to json; this takes a minute...".format(ark_binary_filename))
-    convert_binary_to_json(ark_binary_filename, json_full_filename)
+    #convert_binary_to_json(ark_binary_filename, json_full_filename)
     iprint("1/5 Wrote {}\n".format(json_full_filename))
 
     iprint("2/5 Simplifying json so we can read the game objects...")
-    simplify_json_to_game_objects(json_full_filename, json_objects_filename)
+    #simplify_json_to_game_objects(json_full_filename, json_objects_filename)
     iprint("2/5 Wrote {}\n".format(json_objects_filename))
 
     iprint("3/5 Processing game objects. This takes the longest time; several minutes...")
     process_game_objects(json_objects_filename) # purely in-memory
 
     iprint("4/5 Reporting inventories...")
-    report_inventories(inventory_filename)
+    #report_inventories(inventory_filename)
     iprint("4/5 Wrote {}\n".format(inventory_filename))
 
     iprint("5/5 Reporting hungry tames...")
