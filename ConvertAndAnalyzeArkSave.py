@@ -5,6 +5,7 @@ import re
 import os
 import time
 import json
+from functools import reduce
 from pprint import pprint
 
 
@@ -16,6 +17,7 @@ miscellaneous = dict()
 inventory_to_owner_reverse_lookup = dict()
 tame_dinos = dict()
 dino_status = dict()
+generatorFuel = dict()
 
 # Status values are an ordered sequence rather than named.
 # Constants help us stay sane.
@@ -147,6 +149,34 @@ def simplifyName(text):
         text = text[:-2]
     return text
 
+def report_low_fuel_generators(low_fuel_filename):
+    header = "x\ty\tz\tPlayer\tFuel\n"
+    with open(low_fuel_filename, "w") as outfile:
+        outfile.write(header)
+        for location in generatorFuel:
+            fuelPercent = 100.0 * generatorFuel.get(location) / 800.0
+            pieces = location.split()
+            x = pieces[0]
+            y = pieces[1]
+            z = pieces[2]
+            if len(pieces) > 3:
+                player = pieces[3]
+            else:
+                player = ""
+            outfile.write(x + "\t" + y + "\t" + z + "\t" + player + "\t" + "{:2.1f}%\n".format(fuelPercent))
+
+    return low_fuel_filename # not strictly necessary but following my standard elsewhere
+
+
+def increaseFuelQuantityAtLocation(x, y, z, player, quantityInStack):
+    key = x + " " + y + " " + z + " " + player
+    currentQuantity = generatorFuel.get(key, 0)
+    generatorFuel[key] = currentQuantity + quantityInStack
+
+
+def coalesce(*arg):
+    """ Returns the first non-empty argument of the parameters """
+    return reduce(lambda x, y: x if x is not None and x.strip() is not "" else y, arg)
 
 def report_inventories(inventory_filename):
     with open(inventory_filename, "w") as outfile:
@@ -174,6 +204,7 @@ def report_inventories(inventory_filename):
                 "\t" + getPropertyValueByName(owner['properties'], 'TribeName') + \
                 "\t" + str(inventoryObject['id']) + \
                 "\t" + simplifyName(inventoryObject.get('class', ''))
+            who = coalesce(getPropertyValueByName(owner['properties'], 'OwningPlayerName'), getPropertyValueByName(owner['properties'], 'PlayerName'),  getPropertyValueByName(owner['properties'], 'OwnerName'), "UnknownOwner")
 
             stackIds = getPropertyValueByName(inventoryObject['properties'], 'InventoryItems')
             stacks = dict()
@@ -182,6 +213,12 @@ def report_inventories(inventory_filename):
                 if stack and not isEngram(stack) and not isSpecialInventoryItem(stack):
                     itemName = simplifyName(stack['class'])
                     itemQuantity = getPropertyValueByName(stack['properties'], 'ItemQuantity') or 1
+                    if (simplifyName(owner['class']) == "ElectricGenerator" and itemName == "Gasoline"):
+                        increaseFuelQuantityAtLocation(str(owner['location']['x']), 
+                                str(owner['location']['y']), 
+                                str(owner['location']['z']), 
+                                who.replace(' ', '_'),
+                                itemQuantity)
                     bisBlueprint = str(getPropertyValueByName(stack['properties'], 'bIsBlueprint'))
                     outfile.write(identifierColumns + "\t" + itemName + "\t" + str(itemQuantity) + "\t" + ("Blueprint" if bisBlueprint else "Item") + "\n")
     return inventory_filename
@@ -279,7 +316,7 @@ def calculate_food_total(dino, valuesjson_entry, base_character_level, extra_cha
 
 ### DEBUG ###
     name = getPropertyValueByName(dino['properties'], 'TamedName')
-    print("{} - B {}  Lw {}  Ld {}  Iw {}  Id {}  Ta {}  Tm {}  TE {}  IB {}".format(name, B, Lw, Ld, Iw, Id, Ta, Tm, TE, IB))
+    #print("{} - B {}  Lw {}  Ld {}  Iw {}  Id {}  Ta {}  Tm {}  TE {}  IB {}".format(name, B, Lw, Ld, Iw, Id, Ta, Tm, TE, IB))
 ### DEBUG ###
 
     TmM = 1.0 # PerLevelStatsMultiplier_DinoTamed_Affinity from Game.ini
@@ -413,15 +450,31 @@ def simplify_json_to_game_objects(json_full_filename, json_objects_filename):
                 previous_line = current_line
 
 
-def process_game_objects(json_objects_filename):
+def process_game_objects(json_objects_filename, totalObjectsCount):
     """
     Reads the game objects json and pulls out text-format inventory etc.
     Stores this information in global variables for later reporting.
     """
+    count = 0
+
     with open(json_objects_filename) as data:
         gameobjects = naya.stream_array(naya.tokenize(data))
         for gameobject in gameobjects:
             handle_object(gameobject)
+            count = count + 1
+            percent = (count * 100.0 / totalObjectsCount)
+            if (count % 500 == 0):
+                time.sleep(0.01)
+                print('{:2.2f}%   '.format(percent), end="\r", flush=True)
+    print("")
+
+
+def extractObjectCount(returned_output):
+    # Got N objects total.
+    (before, after) = returned_output.split("Got ")
+    objectCount = after.split(" ")[0]
+    return objectCount
+
 
 def convert_binary_to_json(ark_binary_filename, json_full_filename):
     """
@@ -433,6 +486,9 @@ def convert_binary_to_json(ark_binary_filename, json_full_filename):
         os.remove(json_full_filename)
     returned_output = subprocess.check_output(["./ArkBinaryToJsonConvertor.exe", ark_binary_filename, json_full_filename]).decode("utf-8").strip()
     print(re.sub("^", "    ", returned_output, flags=re.MULTILINE)) # nice indent on output from subprocess
+    totalObjectsCount = extractObjectCount(returned_output)
+    print("Total objects: " + totalObjectsCount)
+    return int(totalObjectsCount)
 
 def iprint(text):
     """
@@ -456,25 +512,30 @@ def main_conversion(ark_binary_filename):
     json_objects_filename = ark_binary_filename.replace(".ark", "_game_objects.json")
     inventory_filename = ark_binary_filename.replace(".ark", "_inventory.txt")
     hungry_tames_filename = ark_binary_filename.replace(".ark", "_hungry_tames.txt")
+    low_fuel_filename = ark_binary_filename.replace(".ark", "_low_fuel.txt")
 
-    iprint("1/5 Converting {} from binary to json; this takes a minute...".format(ark_binary_filename))
-    #convert_binary_to_json(ark_binary_filename, json_full_filename)
-    iprint("1/5 Wrote {}\n".format(json_full_filename))
+    print("1/6 Converting {} from binary to json; this takes a minute...".format(ark_binary_filename), flush=True)
+    totalObjectsCount = convert_binary_to_json(ark_binary_filename, json_full_filename)
+    print("1/6 Wrote {}\n".format(json_full_filename), flush=True)
 
-    iprint("2/5 Simplifying json so we can read the game objects...")
-    #simplify_json_to_game_objects(json_full_filename, json_objects_filename)
-    iprint("2/5 Wrote {}\n".format(json_objects_filename))
+    print("2/6 Simplifying json so we can read the game objects...", flush=True)
+    simplify_json_to_game_objects(json_full_filename, json_objects_filename)
+    print("2/6 Wrote {}\n".format(json_objects_filename), flush=True)
 
-    iprint("3/5 Processing game objects. This takes the longest time; several minutes...")
-    process_game_objects(json_objects_filename) # purely in-memory
+    print("3/6 Processing game objects. This takes the longest time; several minutes...", flush=True)
+    process_game_objects(json_objects_filename, totalObjectsCount) # purely in-memory
 
-    iprint("4/5 Reporting inventories...")
-    #report_inventories(inventory_filename)
-    iprint("4/5 Wrote {}\n".format(inventory_filename))
+    print("4/6 Reporting inventories...", flush=True)
+    report_inventories(inventory_filename)
+    print("4/6 Wrote {}\n".format(inventory_filename), flush=True)
 
-    iprint("5/5 Reporting hungry tames...")
+    print("5/6 Reporting hungry tames...", flush=True)
     report_hungry_tames(hungry_tames_filename)
-    iprint("5/5 Wrote {}\n".format(hungry_tames_filename))
+    print("5/6 Wrote {}\n".format(hungry_tames_filename), flush=True)
+
+    print("6/6 Reporting low-fuel generators...", flush=True)
+    report_low_fuel_generators(low_fuel_filename)
+    print("6/6 Wrote {}\n".format(low_fuel_filename), flush=True)
 
     end_time_seconds = round(time.time())
 
@@ -482,7 +543,7 @@ def main_conversion(ark_binary_filename):
     #pprint(miscellaneous)
 
     minutes = (end_time_seconds - start_time_seconds)/60.0
-    iprint("Completed in " + str(minutes) + " minutes.")
+    print("Completed in " + str(minutes) + " minutes.", flush=True)
 
 
 def main(argv):
